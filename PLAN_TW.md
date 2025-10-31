@@ -1,6 +1,6 @@
 # 🇹🇼 AI-Trader 台股支援整合計劃
 
-> **版本**: v2.0（方案 B - 統一 MCP 工具）
+> **版本**: v2.1（方案 B - 統一 MCP 工具）
 > **更新日期**: 2025-10-31
 > **目標**: 在保持美股功能的基礎上，新增台股交易支援
 
@@ -35,7 +35,6 @@
 - ❌ 不移除或破壞現有美股功能
 - ❌ 不強制要求使用 Shioaji
 - ❌ 不改變核心 AI Agent 邏輯
-- ❌ 不支援同時並行執行多個市場（當前設計限制）
 
 ---
 
@@ -127,14 +126,29 @@ tool_trade.py (Port 8002)
 ### 參數傳遞機制
 
 ```
-main.py
-  ↓ write_config_value("MARKET", "us" or "tw")
-runtime_env.json
-  ↓ get_config_value("MARKET")
+main.py (或 main_parallel.py)
+  ↓ 設定 os.environ["RUNTIME_ENV_PATH"]
+  ↓ = "data/agent_data/{signature}/.runtime_env.json"
+  ↓ 讀取 config.get("market", "us")
+  ↓ write_config_value("MARKET", market)
+
+data/agent_data/{signature}/.runtime_env.json
+  (每個 signature 有獨立的配置檔案)
+
+  ↓ get_config_value("MARKET", "us")
+
 MCP Tools (tool_trade.py, tool_get_price_local.py)
   ↓ 根據 market 參數選擇邏輯
+  ↓ if market == "us": 使用 merged.jsonl
+  ↓ if market == "tw": 使用 merged_tw.jsonl
+
 執行對應的市場邏輯
 ```
+
+**重要特性**：
+- 每個 signature 有獨立的 `.runtime_env.json`
+- 支援使用不同 config 並行執行不同市場
+- 例如：Terminal 1 執行 `configs/default_config.json` (美股)，Terminal 2 執行 `configs/tw_config.json` (台股)
 
 ---
 
@@ -231,7 +245,8 @@ TW_STOCK_MIN_VOLUME=10000000         # 最低成交額 1000 萬
 TW_STOCK_EXCLUDE_ETF=True            # 排除 ETF
 
 # === 系統配置 ===
-RUNTIME_ENV_PATH=./runtime_env.json
+# RUNTIME_ENV_PATH 由 main.py 自動設定為 data/agent_data/{signature}/.runtime_env.json
+# 無需手動配置，每個 signature 有獨立的 runtime_env
 AGENT_MAX_STEP=30
 ```
 
@@ -696,7 +711,11 @@ uv run data/merge_jsonl.py
 uv run agent_tools/start_mcp_services.py
 
 # 4. 執行美股交易（另一個終端）
+# 單一模型順序執行
 uv run main.py configs/default_config.json
+
+# 或多模型並行執行（使用 main_parallel.py）
+uv run main_parallel.py configs/default_config.json
 ```
 
 ### 台股交易流程（新增）
@@ -715,7 +734,11 @@ uv run data/merge_jsonl_tw.py
 uv run agent_tools/start_mcp_services.py
 
 # 5. 執行台股交易（另一個終端）
+# 單一模型順序執行
 uv run main.py configs/tw_config.json
+
+# 或多模型並行執行（使用 main_parallel.py）
+uv run main_parallel.py configs/tw_config.json
 ```
 
 ### 模擬與真實模式切換
@@ -752,14 +775,15 @@ SHIOAJI_SIMULATION=True   # 模擬模式
 |------|------|------|---------|
 | 真實交易誤操作 | 低 | 極高 | 預設模擬模式、多重確認 |
 | 配置錯誤 | 中 | 中 | 配置驗證、範例檔案 |
-| 並行執行衝突 | 低 | 中 | 文件說明不支援並行 |
+| 同一 signature 重複執行 | 低 | 中 | 使用不同 signature，文件說明並行執行方式 |
 
-### 架構限制
+### 架構限制與特性
 
-| 限制 | 影響 | 說明 |
+| 項目 | 影響 | 說明 |
 |------|------|------|
-| 不支援同時執行多市場 | 低 | runtime_env.json 只有一個 MARKET 值 |
-| MCP 服務需重新讀取配置 | 無 | get_config_value 每次都重新讀取 |
+| 同一 signature 只能執行一個市場 | 低 | 每個 signature 的 runtime_env.json 只有一個 MARKET 值 |
+| ✅ 支援並行執行不同市場 | 正面 | 使用不同 signature 和 config，可在不同終端並行執行美股和台股 |
+| MCP 服務動態讀取配置 | 無 | get_config_value 每次都重新讀取，無需重啟服務 |
 
 ---
 
@@ -776,14 +800,14 @@ SHIOAJI_SIMULATION=True   # 模擬模式
 | **擴展性** | 每加一市場 +2 檔案 | 每加一市場只需在工具內加判斷 |
 | **BaseAgent 配置** | 需切換 MCP 配置 | 不需切換 |
 | **Bug 修復** | 需改兩個地方 | 只需改一個地方 |
-| **並行支援** | 可同時運行 | 不支援（可接受） |
+| **並行支援** | 可同時運行 | ✅ 支援（使用不同 config 和 signature） |
 
 **選擇方案 B 的理由**：
 1. ✅ 符合 DRY 原則
 2. ✅ 維護成本低
 3. ✅ 擴展性好
 4. ✅ BaseAgent 邏輯簡化
-5. ⚠️ 唯一限制：不支援同時執行多市場（符合當前設計）
+5. ✅ 支援並行執行不同市場（每個 signature 獨立 runtime_env）
 
 ---
 
@@ -806,9 +830,10 @@ SHIOAJI_SIMULATION=True   # 模擬模式
 - [ ] 策略回測框架
 - [ ] 自動化報告生成
 
-### 第四優先（解除並行限制）
-- [ ] 改用其他方式傳遞 market 參數（例如 HTTP header）
-- [ ] 支援同時執行多市場
+### 第四優先（改進使用體驗）
+- [ ] 提供並行執行範例腳本
+- [ ] 加入並行執行狀態監控
+- [ ] 統一的配置管理工具
 
 ---
 
@@ -844,7 +869,11 @@ A: 透過 `get_config_value("MARKET", "us")` 從 runtime_env.json 讀取，main.
 A: 建議每天收盤後執行 `get_daily_price_tw.py` 更新數據。
 
 **Q: 可以同時交易美股和台股嗎？**
-A: 目前不支援同時並行執行（runtime_env.json 只有一個 MARKET 值）。需要分別執行。
+A: ✅ 可以！因為每個 signature 有獨立的 `.runtime_env.json` 檔案（位於 `data/agent_data/{signature}/` 目錄下），所以可以在不同終端並行執行：
+   - Terminal 1: `uv run main.py configs/default_config.json` (signature="gpt-5", market="us")
+   - Terminal 2: `uv run main.py configs/tw_config.json` (signature="gpt-5-tw", market="tw")
+
+   限制：同一個 signature 不能同時執行兩個市場（因為共用同一個 runtime_env.json）
 
 **Q: 模擬模式和真實模式有什麼差別？**
 A: 模擬模式只寫入本地檔案，真實模式會實際呼叫 Shioaji API 下單到永豐金證券。
@@ -853,7 +882,24 @@ A: 模擬模式只寫入本地檔案，真實模式會實際呼叫 Shioaji API �
 A: 執行 `uv run main.py configs/default_config.json` 即可，美股功能完全保留。
 
 **Q: 為什麼不需要修改 start_mcp_services.py？**
-A: 因為 MCP 工具統一了，不需要根據市場啟動不同的服務。所有市場共用同一套 MCP 服務。
+A: 因為 MCP 工具統一了，不需要根據市場啟動不同的服務。所有市場共用同一套 MCP 服務（Port 8002, 8003）。MCP 工具內部會透過 `get_config_value("MARKET")` 動態讀取當前市場參數。
+
+**Q: main.py 和 main_parallel.py 有什麼差別？**
+A:
+- `main.py`：順序執行多個模型（config 中的 models 列表依序執行）
+- `main_parallel.py`：並行執行多個模型（同時啟動多個子程序）
+- 兩者都支援台股/美股切換，只是執行方式不同
+- 使用 main_parallel.py 可節省總執行時間
+
+**Q: runtime_env.json 存放在哪裡？**
+A: 每個 signature 有獨立的配置檔案，路徑為 `data/agent_data/{signature}/.runtime_env.json`。這個路徑由 main.py 自動設定（main.py Line 179-182），不需要手動配置。
+
+**Q: 如何確認目前使用的是哪個市場？**
+A: 可以查看對應 signature 的 runtime_env.json 檔案：
+```bash
+cat data/agent_data/{signature}/.runtime_env.json
+# 會看到 {"MARKET": "us"} 或 {"MARKET": "tw"}
+```
 
 ---
 
@@ -863,6 +909,7 @@ A: 因為 MCP 工具統一了，不需要根據市場啟動不同的服務。所
 |------|------|---------|
 | v1.0 | 2025-10-31 | 初版發布（方案 A - 分離式 MCP） |
 | v2.0 | 2025-10-31 | 改為方案 B（統一式 MCP），減少代碼重複 |
+| v2.1 | 2025-10-31 | 修正 runtime_env.json 路徑說明，澄清並行執行機制，新增 main_parallel.py 使用說明 |
 
 ---
 
